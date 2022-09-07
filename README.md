@@ -13,8 +13,8 @@ This works fine when the source is available to the machine executing the binary
 Use `go install` to install the package the `rice` tool.
 
 ```bash
-go install github.com/TheTinkerDad/go.rice@latest
-go install github.com/TheTinkerDad/go.rice/rice@latest
+go install github.com/TheTinkerDad/go.rice
+go install github.com/TheTinkerDad/go.rice/rice
 ```
 
 ## Package usage
