@@ -14,6 +14,47 @@ import (
 )
 
 func operationAppend(pkgs []*build.Package) {
+	boxes := make(map[string]string)
+	for _, pkg := range pkgs {
+		// find boxes for this command
+		boxMap := findBoxes(pkg)
+
+		// notify user when no calls to rice.FindBox are made (is this an error and therefore os.Exit(1) ?
+		if len(boxMap) == 0 {
+			fmt.Printf("no calls to rice.FindBox() or rice.MustFindBox() found in import path `%s`\n", pkg.ImportPath)
+			continue
+		}
+
+		verbosef("\n")
+
+		for boxname := range boxMap {
+			appendedBoxName := strings.Replace(boxname, `/`, `-`, -1)
+
+			// walk box path's and insert files
+			boxPath := filepath.Clean(filepath.Join(pkg.Dir, boxname))
+
+			boxes[appendedBoxName] = boxPath
+		}
+	}
+	appendBoxes(flags.Append.Executable, boxes)
+}
+
+func operationAppendDir(dirs []string) {
+	boxes := make(map[string]string)
+	for _, dir := range dirs {
+		appendedBoxName := strings.Replace(dir, `/`, `-`, -1)
+		boxes[appendedBoxName] = dir
+	}
+
+	if len(flags.AppendDir.Dirs) == 0 {
+		fmt.Print("You should specify at least one directory to append. Please use -d or --dir option.\n")
+		os.Exit(1)
+	}
+	appendBoxes(flags.AppendDir.Executable, boxes)
+}
+
+// append boxes (key: box name, value: filesystem path)
+func appendBoxes(executable string, boxes map[string]string) {
 	// create tmp zipfile
 	tmpZipfileName := filepath.Join(os.TempDir(), fmt.Sprintf("ricebox-%d-%s.zip", time.Now().Unix(), randomString(10)))
 	verbosef("Will create tmp zipfile: %s\n", tmpZipfileName)
@@ -28,7 +69,7 @@ func operationAppend(pkgs []*build.Package) {
 	}()
 
 	// find abs path for binary file
-	binfileName, err := filepath.Abs(flags.Append.Executable)
+	binfileName, err := filepath.Abs(executable)
 	if err != nil {
 		fmt.Printf("Error finding absolute path for executable to append: %s\n", err)
 		os.Exit(1)
@@ -61,72 +102,55 @@ func operationAppend(pkgs []*build.Package) {
 	// write the zip offset into the zip data
 	zipWriter.SetOffset(binfileInfo.Size())
 
-	for _, pkg := range pkgs {
-		// find boxes for this command
-		boxMap := findBoxes(pkg)
-
-		// notify user when no calls to rice.FindBox are made (is this an error and therefore os.Exit(1) ?
-		if len(boxMap) == 0 {
-			fmt.Printf("no calls to rice.FindBox() or rice.MustFindBox() found in import path `%s`\n", pkg.ImportPath)
-			continue
-		}
-
-		verbosef("\n")
-
-		for boxname := range boxMap {
-			appendedBoxName := strings.Replace(boxname, `/`, `-`, -1)
-
-			// walk box path's and insert files
-			boxPath := filepath.Clean(filepath.Join(pkg.Dir, boxname))
-			filepath.Walk(boxPath, func(path string, info os.FileInfo, err error) error {
-				if info == nil {
-					fmt.Printf("Error: box \"%s\" not found on disk\n", path)
-					os.Exit(1)
+	for appendedBoxName, boxPath := range boxes {
+		filepath.Walk(boxPath, func(path string, info os.FileInfo, err error) error {
+			if info == nil {
+				fmt.Printf("Error: box \"%s\" not found on disk\n", path)
+				os.Exit(1)
+			}
+			// create zipFilename
+			zipFileName := filepath.Join(appendedBoxName, strings.TrimPrefix(path, boxPath))
+			// write directories as empty file with comment "dir"
+			if info.IsDir() {
+				header := &zip.FileHeader{
+					Name:    zipFileName,
+					Comment: "dir",
 				}
-				// create zipFilename
-				zipFileName := filepath.Join(appendedBoxName, strings.TrimPrefix(path, boxPath))
-				// write directories as empty file with comment "dir"
-				if info.IsDir() {
-					header := &zip.FileHeader{
-						Name:     zipFileName,
-						Comment:  "dir",
-					}
-					header.SetModTime(info.ModTime())
-					_, err := zipWriter.CreateHeader(header)
-					if err != nil {
-						fmt.Printf("Error creating dir in tmp zip: %s\n", err)
-						os.Exit(1)
-					}
-					return nil
-				}
-
-				// create zipFileWriter
-				zipFileHeader, err := zip.FileInfoHeader(info)
+				header.SetModTime(info.ModTime())
+				_, err := zipWriter.CreateHeader(header)
 				if err != nil {
-					fmt.Printf("Error creating zip FileHeader: %v\n", err)
+					fmt.Printf("Error creating dir in tmp zip: %s\n", err)
 					os.Exit(1)
 				}
-				zipFileHeader.Name = zipFileName
-				zipFileWriter, err := zipWriter.CreateHeader(zipFileHeader)
-				if err != nil {
-					fmt.Printf("Error creating file in tmp zip: %s\n", err)
-					os.Exit(1)
-				}
-				srcFile, err := os.Open(path)
-				if err != nil {
-					fmt.Printf("Error opening file to append: %s\n", err)
-					os.Exit(1)
-				}
-				_, err = io.Copy(zipFileWriter, srcFile)
-				if err != nil {
-					fmt.Printf("Error copying file contents to zip: %s\n", err)
-					os.Exit(1)
-				}
-				srcFile.Close()
-
 				return nil
-			})
-		}
+			}
+
+			// create zipFileWriter
+			zipFileHeader, err := zip.FileInfoHeader(info)
+			if err != nil {
+				fmt.Printf("Error creating zip FileHeader: %v\n", err)
+				os.Exit(1)
+			}
+			zipFileHeader.Name = zipFileName
+			zipFileWriter, err := zipWriter.CreateHeader(zipFileHeader)
+			if err != nil {
+				fmt.Printf("Error creating file in tmp zip: %s\n", err)
+				os.Exit(1)
+			}
+			srcFile, err := os.Open(path)
+			if err != nil {
+				fmt.Printf("Error opening file to append: %s\n", err)
+				os.Exit(1)
+			}
+			_, err = io.Copy(zipFileWriter, srcFile)
+			if err != nil {
+				fmt.Printf("Error copying file contents to zip: %s\n", err)
+				os.Exit(1)
+			}
+			srcFile.Close()
+
+			return nil
+		})
 	}
 
 	err = zipWriter.Close()
